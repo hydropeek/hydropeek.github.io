@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Supply Portal</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css" />
+  <!-- UMD builds — no ES modules, works over file:// and https:// alike -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -23,17 +27,17 @@
 <body>
   <div id="root"></div>
 
-  <script type="text/babel" data-type="module">
-    import { useState, useEffect, useCallback } from "https://esm.sh/react@18";
-    import { createRoot } from "https://esm.sh/react-dom@18/client";
-    import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+  <script type="text/babel">
+    const { useState, useEffect, useCallback } = React;
+    const { createClient } = supabase;
 
     // ─── Supabase config ──────────────────────────────────────────────────────
     // Replace these two values with your own from Supabase > Settings > API
     const SUPABASE_URL      = "YOUR_SUPABASE_URL";
     const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
 
-    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const isConfigured = SUPABASE_URL !== "YOUR_SUPABASE_URL" && SUPABASE_ANON_KEY !== "YOUR_SUPABASE_ANON_KEY";
+    const sb = isConfigured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
     // ─── DB row ↔ JS object mappers ──────────────────────────────────────────
     function toRow(req) {
@@ -235,7 +239,7 @@
           notes:          fields.notes.trim(),
           status:         "pending",
         };
-        const { error } = await supabase.from("supply_requests").insert(toRow(newReq));
+        const { error } = await sb.from("supply_requests").insert(toRow(newReq));
         setSaving(false);
         if (error) { setDbError(error.message); return; }
         setSubmitted(true);
@@ -533,8 +537,6 @@
     }
 
     // ─── Root App ─────────────────────────────────────────────────────────────
-    const isConfigured = SUPABASE_URL !== "YOUR_SUPABASE_URL" && SUPABASE_ANON_KEY !== "YOUR_SUPABASE_ANON_KEY";
-
     function App() {
       const [view, setView]         = useState("submit");
       const [requests, setRequests] = useState([]);
@@ -552,7 +554,7 @@
       const loadRequests = useCallback(async () => {
         if (!isConfigured) { setLoading(false); return; }
         setLoading(true);
-        const { data, error } = await supabase
+        const { data, error } = await sb
           .from("supply_requests")
           .select("*")
           .order("created_at", { ascending: false });
@@ -564,17 +566,17 @@
 
       useEffect(() => {
         if (!isConfigured) return;
-        const channel = supabase
+        const channel = sb
           .channel("supply_requests_changes")
           .on("postgres_changes", { event: "*", schema: "public", table: "supply_requests" }, () => {
             loadRequests();
           })
           .subscribe();
-        return () => supabase.removeChannel(channel);
+        return () => sb.removeChannel(channel);
       }, [loadRequests]);
 
       async function handleUpdate(id, newStatus) {
-        const { error } = await supabase
+        const { error } = await sb
           .from("supply_requests")
           .update({ status: newStatus })
           .eq("id", id);
@@ -583,7 +585,7 @@
 
       async function handleClear() {
         if (!window.confirm("Delete all requests from the database? This cannot be undone.")) return;
-        const { error } = await supabase.from("supply_requests").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+        const { error } = await sb.from("supply_requests").delete().neq("id", "00000000-0000-0000-0000-000000000000");
         if (!error) setRequests([]);
       }
 
@@ -641,7 +643,7 @@
     const detLbl   = { fontSize:11, fontWeight:700, color:B.gray, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:4 };
 
     // ─── Mount ────────────────────────────────────────────────────────────────
-    createRoot(document.getElementById("root")).render(<App />);
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
   </script>
 </body>
 </html>
