@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Supply Portal</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css" />
+  <!-- UMD builds — no ES modules, works over file:// and https:// alike -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #f8fafc;
+      padding: 0 1rem 3rem;
+      --color-background-primary: #ffffff;
+      --color-background-secondary: #f8fafc;
+      --color-text-primary: #0f172a;
+      --color-text-secondary: #475569;
+      --font-sans: system-ui, -apple-system, sans-serif;
+      --font-mono: ui-monospace, "Cascadia Code", monospace;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback } = React;
+    const { createClient } = supabase;
+
+    // ─── Supabase config ──────────────────────────────────────────────────────
+    // Replace these two values with your own from Supabase > Settings > API
+    const SUPABASE_URL      = "YOUR_SUPABASE_URL";
+    const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
+
+    const isConfigured = SUPABASE_URL !== "YOUR_SUPABASE_URL" && SUPABASE_ANON_KEY !== "YOUR_SUPABASE_ANON_KEY";
+    const sb = isConfigured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+    // ─── DB row ↔ JS object mappers ──────────────────────────────────────────
+    function toRow(req) {
+      return {
+        link:             req.link,
+        retailer:         req.retailer       ?? null,
+        product_id:       req.productId      ?? null,
+        product_id_label: req.productIdLabel ?? null,
+        name:             req.name,
+        store:            req.store,
+        qty:              req.qty,
+        urgency:          req.urgency,
+        notes:            req.notes          || null,
+        status:           req.status,
+      };
+    }
+
+    function fromRow(row) {
+      return {
+        id:             row.id,
+        link:           row.link,
+        retailer:       row.retailer        ?? null,
+        productId:      row.product_id      ?? null,
+        productIdLabel: row.product_id_label ?? null,
+        name:           row.name,
+        store:          row.store,
+        qty:            row.qty,
+        urgency:        row.urgency,
+        notes:          row.notes           ?? "",
+        status:         row.status,
+        createdAt:      row.created_at,
+      };
+    }
+
+    // ─── Font injection ───────────────────────────────────────────────────────
+    const FONT_URLS = [
+      "https://cdn.jsdelivr.net/npm/@fontsource/nunito@5/400.css",
+      "https://cdn.jsdelivr.net/npm/@fontsource/nunito@5/500.css",
+      "https://cdn.jsdelivr.net/npm/@fontsource/nunito@5/700.css",
+    ];
+
+    // ─── Brand palette ────────────────────────────────────────────────────────
+    const B = {
+      blue:       "#2563EB", blueHover: "#1D4ED8", blueBg:    "#EFF6FF",
+      blueBorder: "#BFDBFE", blueText:  "#1E40AF",
+      teal:       "#0D9488", tealBg:    "#F0FDFA", tealBorder:"#99F6E4", tealText:"#0F766E",
+      gray:       "#64748B", grayBg:    "#F8FAFC", grayBorder:"#CBD5E1", grayLight:"#F1F5F9",
+    };
+
+    const STORES = [
+      "Store #001 — Downtown", "Store #002 — Midtown", "Store #003 — Uptown",
+      "Store #004 — East Side", "Store #005 — West Side", "Store #006 — Airport",
+    ];
+
+    const URGENCY = [
+      { value:"low",      label:"Low",      color:"#0F766E", bg:"#F0FDFA", border:"#5EEAD4", icon:"ti-leaf" },
+      { value:"medium",   label:"Medium",   color:"#854F0B", bg:"#FAEEDA", border:"#FCD34D", icon:"ti-clock" },
+      { value:"high",     label:"High",     color:"#9A3412", bg:"#FFF7ED", border:"#FCA5A1", icon:"ti-flame" },
+      { value:"critical", label:"Critical", color:"#991B1B", bg:"#FEF2F2", border:"#FCA5A5", icon:"ti-alert-triangle" },
+    ];
+
+    const STATUS = {
+      pending:  { label:"Pending",  color:B.blueText, bg:B.blueBg, border:B.blueBorder, icon:"ti-clock" },
+      ordered:  { label:"Ordered",  color:B.tealText, bg:B.tealBg, border:B.tealBorder, icon:"ti-shopping-cart" },
+      received: { label:"Received", color:"#166534",  bg:"#F0FDF4",border:"#86EFAC",    icon:"ti-circle-check" },
+    };
+
+    // ─── Retailer URL patterns ────────────────────────────────────────────────
+    const RETAILERS = [
+      { name:"Amazon",          domains:["amazon.com","amazon.ca","amazon.co.uk","amazon.de","amazon.fr","amazon.co.jp","amazon.com.au"], label:"ASIN",    patterns:[/\/dp\/([A-Z0-9]{10})(?:[/?]|$)/i,/\/gp\/product\/([A-Z0-9]{10})(?:[/?]|$)/i] },
+      { name:"Walmart",         domains:["walmart.com"],             label:"Item ID", patterns:[/\/ip\/(?:[^/?]+\/)?(\d{6,})(?:[/?]|$)/,/[?&]itemId=(\d+)/] },
+      { name:"Home Depot",      domains:["homedepot.com"],           label:"Item #",  patterns:[/\/p\/[^/?]+\/(\d{6,})(?:[/?]|$)/,/\/p\/(\d{6,})(?:[/?]|$)/] },
+      { name:"Best Buy",        domains:["bestbuy.com"],             label:"SKU",     patterns:[/[?&]skuId=(\d+)/,/\/(\d{6,})\.p(?:[?/]|$)/] },
+      { name:"Target",          domains:["target.com"],              label:"TCIN",    patterns:[/\/-\/A-(\d+)(?:[/?]|$)/,/\/A-(\d+)(?:[/?]|$)/] },
+      { name:"Staples",         domains:["staples.com"],             label:"Item #",  patterns:[/\/product_([A-Z0-9\-]+)(?:[/?]|$)/i] },
+      { name:"Costco",          domains:["costco.com"],              label:"Item #",  patterns:[/\.(\d{6,})\.html/,/product\.(\d{6,})/] },
+      { name:"Office Depot",    domains:["officedepot.com"],         label:"Item #",  patterns:[/\/products\/(\d{5,})\//,/\/a\/products\/(\d{5,})/] },
+      { name:"Sam's Club",      domains:["samsclub.com"],            label:"Item #",  patterns:[/\/prod(\d{6,})(?:[/?]|$)/] },
+      { name:"Uline",           domains:["uline.com"],               label:"Item #",  patterns:[/\/product\/(\d{4,})\//i] },
+      { name:"WebstaurantStore",domains:["webstaurantstore.com"],    label:"Item #",  patterns:[/\/(\d{5,})\/[^/]+\.html/] },
+      { name:"Sysco",           domains:["sysco.com","shop.sysco.com"], label:"Item #", patterns:[/\/product\/(\d{4,})/i,/[?&]productId=(\d+)/i] },
+    ];
+
+    function parseProductId(url) {
+      if (!url) return null;
+      let parsed;
+      try { parsed = new URL(url); } catch { return null; }
+      const hostname = parsed.hostname.replace(/^www\./, "");
+      for (const r of RETAILERS) {
+        if (!r.domains.some(d => hostname === d || hostname.endsWith("." + d))) continue;
+        const full = parsed.pathname + parsed.search;
+        for (const pat of r.patterns) {
+          const m = full.match(pat);
+          if (m && m[1]) return { retailer: r.name, id: m[1].toUpperCase(), label: r.label };
+        }
+        return { retailer: r.name, id: null, label: r.label };
+      }
+      return null;
+    }
+
+    function isValidUrl(str) {
+      try { const u = new URL(str); return u.protocol === "http:" || u.protocol === "https:"; }
+      catch { return false; }
+    }
+
+    // ─── Micro-components ─────────────────────────────────────────────────────
+    function Req() { return <span style={{ color:"#EF4444", marginLeft:2 }}>*</span>; }
+    function ErrMsg({ children }) {
+      return <span style={{ fontSize:12, color:"#EF4444", display:"flex", alignItems:"center", gap:4, marginTop:2 }}><i className="ti ti-alert-circle" style={{ fontSize:13 }} />{children}</span>;
+    }
+    function UrgencyBadge({ urgency }) {
+      const u = URGENCY.find(x => x.value === urgency) || URGENCY[0];
+      return <span style={{ display:"inline-flex", alignItems:"center", gap:4, padding:"2px 9px", borderRadius:20, background:u.bg, color:u.color, border:`1px solid ${u.border}`, fontSize:11, fontWeight:700 }}><i className={`ti ${u.icon}`} style={{ fontSize:11 }} />{u.label}</span>;
+    }
+    function StatusBadge({ status }) {
+      const s = STATUS[status] || STATUS.pending;
+      return <span style={{ display:"inline-flex", alignItems:"center", gap:4, padding:"2px 9px", borderRadius:20, background:s.bg, color:s.color, border:`1px solid ${s.border}`, fontSize:11, fontWeight:700 }}><i className={`ti ${s.icon}`} style={{ fontSize:11 }} />{s.label}</span>;
+    }
+    function RetailerChip({ parsed }) {
+      if (!parsed) return null;
+      if (parsed.id) return (
+        <span style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"4px 12px", borderRadius:20, background:B.blueBg, border:`1px solid ${B.blueBorder}`, fontSize:12, color:B.blueText }}>
+          <i className="ti ti-scan" style={{ fontSize:13 }} />
+          <span style={{ color:B.gray }}>{parsed.retailer}</span>
+          <span style={{ fontWeight:700 }}>{parsed.label}: {parsed.id}</span>
+        </span>
+      );
+      return (
+        <span style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"4px 12px", borderRadius:20, background:B.grayLight, border:`1px solid ${B.grayBorder}`, fontSize:12, color:B.gray }}>
+          <i className="ti ti-building-store" style={{ fontSize:13 }} />
+          {parsed.retailer} — ID not found in URL
+        </span>
+      );
+    }
+
+    // ─── Not configured screen ────────────────────────────────────────────────
+    function NotConfigured() {
+      return (
+        <div style={{ padding:"3rem 1rem", textAlign:"center" }}>
+          <div style={{ width:56, height:56, borderRadius:16, background:B.blueBg, border:`2px solid ${B.blueBorder}`, display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 16px" }}>
+            <i className="ti ti-database" style={{ fontSize:28, color:B.blue }} />
+          </div>
+          <p style={{ fontSize:17, fontWeight:700, color:"var(--color-text-primary)", marginBottom:8 }}>Supabase not connected</p>
+          <p style={{ fontSize:14, color:B.gray, maxWidth:360, margin:"0 auto 20px", lineHeight:1.6 }}>
+            Open <code style={{ background:B.grayLight, padding:"1px 6px", borderRadius:4, fontSize:12 }}>supply/index.html</code> and replace <code style={{ background:B.grayLight, padding:"1px 6px", borderRadius:4, fontSize:12 }}>YOUR_SUPABASE_URL</code> and <code style={{ background:B.grayLight, padding:"1px 6px", borderRadius:4, fontSize:12 }}>YOUR_SUPABASE_ANON_KEY</code> with your project credentials.
+          </p>
+          <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer"
+            style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"0 18px", height:38, borderRadius:10, background:`linear-gradient(135deg, ${B.blue}, ${B.teal})`, color:"#fff", fontSize:13, fontWeight:700, textDecoration:"none" }}>
+            Open Supabase <i className="ti ti-external-link" style={{ fontSize:13 }} />
+          </a>
+        </div>
+      );
+    }
+
+    // ─── Submit Form ──────────────────────────────────────────────────────────
+    function SubmitForm({ onSubmitted }) {
+      const empty = { link:"", name:"", store:"", qty:"", urgency:"", notes:"" };
+      const [fields, setFields] = useState(empty);
+      const [errors, setErrors] = useState({});
+      const [submitted, setSubmitted] = useState(false);
+      const [saving, setSaving] = useState(false);
+      const [parsed, setParsed] = useState(null);
+      const [dbError, setDbError] = useState(null);
+
+      function set(k, v) {
+        setFields(f => ({ ...f, [k]: v }));
+        setErrors(e => ({ ...e, [k]: null }));
+        if (k === "link") setParsed(isValidUrl(v) ? parseProductId(v) : null);
+      }
+
+      function validate() {
+        const e = {};
+        if (!fields.link) e.link = "Please enter a product URL.";
+        else if (!isValidUrl(fields.link)) e.link = "Enter a valid URL starting with https://";
+        if (!fields.name.trim()) e.name = "Please enter your name.";
+        else if (fields.name.trim().split(/\s+/).length < 2) e.name = "Enter both first and last name.";
+        if (!fields.store) e.store = "Select your store location.";
+        if (!fields.qty) e.qty = "Enter a quantity.";
+        else if (parseInt(fields.qty) < 1) e.qty = "Quantity must be at least 1.";
+        if (!fields.urgency) e.urgency = "Select an urgency level.";
+        return e;
+      }
+
+      async function handleSubmit() {
+        const e = validate();
+        if (Object.keys(e).length) { setErrors(e); return; }
+        setSaving(true);
+        setDbError(null);
+        const p = parseProductId(fields.link.trim());
+        const newReq = {
+          link:           fields.link.trim(),
+          retailer:       p?.retailer       ?? null,
+          productId:      p?.id             ?? null,
+          productIdLabel: p?.label          ?? null,
+          name:           fields.name.trim(),
+          store:          fields.store,
+          qty:            parseInt(fields.qty),
+          urgency:        fields.urgency,
+          notes:          fields.notes.trim(),
+          status:         "pending",
+        };
+        const { error } = await sb.from("supply_requests").insert(toRow(newReq));
+        setSaving(false);
+        if (error) { setDbError(error.message); return; }
+        setSubmitted(true);
+        onSubmitted();
+      }
+
+      if (submitted) return (
+        <div style={{ padding:"3rem 0", textAlign:"center" }}>
+          <div style={{ width:60, height:60, borderRadius:"50%", background:B.tealBg, border:`2px solid ${B.tealBorder}`, display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 16px" }}>
+            <i className="ti ti-circle-check" style={{ fontSize:30, color:B.teal }} />
+          </div>
+          <p style={{ fontSize:18, fontWeight:700, color:"var(--color-text-primary)", marginBottom:6 }}>Request submitted!</p>
+          <p style={{ fontSize:14, color:B.gray, marginBottom:28 }}>Your multi-unit manager has been notified.</p>
+          <button onClick={() => { setFields(empty); setParsed(null); setSubmitted(false); }} style={primaryBtn}>
+            Submit another <i className="ti ti-arrow-right" />
+          </button>
+        </div>
+      );
+
+      return (
+        <div style={{ padding:"1.75rem 0" }}>
+          <div style={{ marginBottom:"1.75rem" }}>
+            <p style={{ fontSize:11, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:B.blue, marginBottom:6 }}>Store Manager</p>
+            <h1 style={{ fontSize:24, fontWeight:700, color:"var(--color-text-primary)", margin:0, lineHeight:1.2 }}>New supply request</h1>
+            <p style={{ fontSize:14, color:B.gray, marginTop:6 }}>Fill out the form to request restocking from your multi-unit manager.</p>
+          </div>
+
+          <div style={card}>
+            <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"1.25rem 1.5rem" }}>
+
+              <div style={{ gridColumn:"1/-1", ...fld }}>
+                <label style={lbl}>Product link <Req /></label>
+                <input style={errors.link ? { ...inp, ...errInp } : inp} type="url"
+                  placeholder="https://amazon.com/dp/... or any supplier URL"
+                  value={fields.link} onChange={e => set("link", e.target.value)}
+                  onBlur={() => { if (fields.link && !isValidUrl(fields.link)) setErrors(e => ({ ...e, link:"Enter a valid URL starting with https://" })); }} />
+                <div style={{ minHeight:26, display:"flex", alignItems:"center" }}>
+                  {parsed
+                    ? <RetailerChip parsed={parsed} />
+                    : <span style={{ fontSize:12, color:B.gray }}>Paste a link — product ID auto-detected for Amazon, Walmart, Staples & more.</span>
+                  }
+                </div>
+                {errors.link && <ErrMsg>{errors.link}</ErrMsg>}
+              </div>
+
+              <div style={fld}>
+                <label style={lbl}>Your name <Req /></label>
+                <input style={errors.name ? { ...inp, ...errInp } : inp} type="text" placeholder="First and last name"
+                  value={fields.name} onChange={e => set("name", e.target.value)} />
+                {errors.name && <ErrMsg>{errors.name}</ErrMsg>}
+              </div>
+
+              <div style={fld}>
+                <label style={lbl}>Store location <Req /></label>
+                <select style={errors.store ? { ...inp, ...errInp } : inp} value={fields.store} onChange={e => set("store", e.target.value)}>
+                  <option value="">Select a location…</option>
+                  {STORES.map(s => <option key={s}>{s}</option>)}
+                </select>
+                {errors.store && <ErrMsg>{errors.store}</ErrMsg>}
+              </div>
+
+              <div style={{ gridColumn:"1/-1", ...fld }}>
+                <label style={lbl}>Urgency level <Req /></label>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10 }}>
+                  {URGENCY.map(u => (
+                    <label key={u.value} style={{
+                      display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+                      gap:5, padding:"12px 8px", cursor:"pointer", fontSize:13, fontWeight:700, textAlign:"center", borderRadius:14, transition:"all 0.15s",
+                      border: fields.urgency === u.value ? `2px solid ${u.color}` : `1.5px solid ${B.grayBorder}`,
+                      color: fields.urgency === u.value ? u.color : B.gray,
+                      background: fields.urgency === u.value ? u.bg : "transparent",
+                    }}>
+                      <input type="radio" name="urgency" value={u.value} checked={fields.urgency === u.value}
+                        onChange={() => set("urgency", u.value)} style={{ display:"none" }} />
+                      <i className={`ti ${u.icon}`} style={{ fontSize:20 }} />
+                      {u.label}
+                    </label>
+                  ))}
+                </div>
+                {errors.urgency && <ErrMsg>{errors.urgency}</ErrMsg>}
+              </div>
+
+              <div style={fld}>
+                <label style={lbl}>Quantity <Req /></label>
+                <input style={errors.qty ? { ...inp, ...errInp } : inp} type="number" min="1"
+                  placeholder="e.g. 50" value={fields.qty} onChange={e => set("qty", e.target.value)} />
+                {errors.qty && <ErrMsg>{errors.qty}</ErrMsg>}
+              </div>
+
+              <div style={fld}>
+                <label style={{ ...lbl, fontWeight:500, color:B.gray }}>Notes <span style={{ fontSize:12 }}>(optional)</span></label>
+                <textarea style={{ ...inp, height:"auto", padding:"10px 14px", resize:"vertical" }}
+                  rows={2} placeholder="Preferred brand, alternatives, deadline…"
+                  value={fields.notes} onChange={e => set("notes", e.target.value)} />
+              </div>
+
+            </div>
+
+            {dbError && (
+              <div style={{ marginTop:"1rem", padding:"10px 14px", borderRadius:10, background:"#FEF2F2", border:"1px solid #FCA5A5", fontSize:13, color:"#991B1B", display:"flex", alignItems:"center", gap:8 }}>
+                <i className="ti ti-alert-circle" style={{ fontSize:16, flexShrink:0 }} />
+                <span><strong>Database error:</strong> {dbError}</span>
+              </div>
+            )}
+
+            <hr style={{ border:"none", borderTop:`1.5px solid ${B.grayBorder}`, margin:"1.5rem 0" }} />
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <p style={{ fontSize:12, color:B.gray }}><span style={{ color:"#EF4444" }}>*</span> Required fields</p>
+              <button onClick={handleSubmit} disabled={saving} style={{ ...primaryBtn, opacity: saving ? 0.7 : 1 }}>
+                {saving ? <><i className="ti ti-loader-2" /> Saving…</> : <>Submit request <i className="ti ti-arrow-right" /></>}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── Dashboard ────────────────────────────────────────────────────────────
+    function Dashboard({ requests, onUpdate, onClear, loading }) {
+      const [filter, setFilter]       = useState("all");
+      const [storeFilter, setStore]   = useState("all");
+      const [expandedId, setExpanded] = useState(null);
+      const [updating, setUpdating]   = useState(null);
+
+      const filtered = requests.filter(r => {
+        if (filter !== "all" && r.status !== filter) return false;
+        if (storeFilter !== "all" && r.store !== storeFilter) return false;
+        return true;
+      });
+
+      const counts = {
+        all:      requests.length,
+        pending:  requests.filter(r => r.status === "pending").length,
+        ordered:  requests.filter(r => r.status === "ordered").length,
+        received: requests.filter(r => r.status === "received").length,
+      };
+
+      function fmt(iso) {
+        return new Date(iso).toLocaleDateString("en-US", { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" });
+      }
+
+      async function handleUpdate(id, newStatus) {
+        setUpdating(id + newStatus);
+        await onUpdate(id, newStatus);
+        setUpdating(null);
+      }
+
+      const statCards = [
+        { key:"all",      label:"All",      icon:"ti-list",          color:B.gray,    bg:"var(--color-background-secondary)", border:B.grayBorder },
+        { key:"pending",  label:"Pending",  icon:"ti-clock",         color:B.blueText,bg:B.blueBg,  border:B.blueBorder },
+        { key:"ordered",  label:"Ordered",  icon:"ti-shopping-cart", color:B.tealText,bg:B.tealBg,  border:B.tealBorder },
+        { key:"received", label:"Received", icon:"ti-circle-check",  color:"#166534", bg:"#F0FDF4", border:"#86EFAC" },
+      ];
+
+      return (
+        <div style={{ padding:"1.75rem 0" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.75rem" }}>
+            <div>
+              <p style={{ fontSize:11, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:B.blue, marginBottom:6 }}>Multi-Unit Manager</p>
+              <h1 style={{ fontSize:24, fontWeight:700, color:"var(--color-text-primary)", margin:0, lineHeight:1.2 }}>Order board</h1>
+              <p style={{ fontSize:14, color:B.gray, marginTop:6 }}>Live view — updates automatically when managers submit.</p>
+            </div>
+            {requests.length > 0 && (
+              <button onClick={onClear} style={{ ...ghostBtn, color:"#DC2626", borderColor:"#FCA5A5", fontSize:12 }}>
+                <i className="ti ti-trash" /> Clear all
+              </button>
+            )}
+          </div>
+
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,minmax(0,1fr))", gap:10, marginBottom:"1.25rem" }}>
+            {statCards.map(({ key, label, icon, color, bg, border }) => (
+              <button key={key} onClick={() => setFilter(key)} style={{
+                background: filter === key ? bg : "var(--color-background-secondary)",
+                border: filter === key ? `2px solid ${border}` : `1.5px solid ${B.grayBorder}`,
+                borderRadius:14, padding:"12px 14px", cursor:"pointer", textAlign:"left", transition:"all 0.15s",
+              }}>
+                <p style={{ fontSize:11, color: filter === key ? color : B.gray, margin:"0 0 4px", display:"flex", alignItems:"center", gap:5, fontWeight:700 }}>
+                  <i className={`ti ${icon}`} style={{ fontSize:13 }} />{label}
+                </p>
+                <p style={{ fontSize:22, fontWeight:700, color: filter === key ? color : "var(--color-text-primary)", margin:0 }}>{counts[key]}</p>
+              </button>
+            ))}
+          </div>
+
+          <div style={{ marginBottom:"1.25rem" }}>
+            <select value={storeFilter} onChange={e => setStore(e.target.value)}
+              style={{ ...inp, width:"auto", minWidth:190, height:34, fontSize:13 }}>
+              <option value="all">All locations</option>
+              {STORES.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </div>
+
+          {loading ? (
+            <div style={{ ...card, textAlign:"center", padding:"2.5rem", color:B.gray, fontSize:14 }}>
+              <i className="ti ti-loader-2" style={{ fontSize:28, display:"block", marginBottom:10 }} />Loading requests…
+            </div>
+          ) : filtered.length === 0 ? (
+            <div style={{ ...card, textAlign:"center", padding:"3rem 1rem", color:B.gray, fontSize:14 }}>
+              <i className="ti ti-inbox" style={{ fontSize:36, display:"block", marginBottom:10, opacity:0.4 }} />
+              No requests {filter !== "all" ? `with status "${filter}"` : "yet"}.
+            </div>
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              {filtered.map(req => {
+                const isOpen = expandedId === req.id;
+                return (
+                  <div key={req.id} style={{ ...card, padding:0, overflow:"hidden" }}>
+                    <div style={{
+                      display:"grid", gridTemplateColumns:"1fr auto", padding:"14px 16px", gap:12,
+                      cursor:"pointer", background: isOpen ? B.grayLight : "var(--color-background-primary)",
+                      transition:"background 0.15s",
+                    }} onClick={() => setExpanded(isOpen ? null : req.id)}>
+                      <div style={{ display:"flex", flexDirection:"column", gap:7, minWidth:0 }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                          <span style={{ fontSize:14, fontWeight:700, color:"var(--color-text-primary)" }}>
+                            {req.retailer || (() => { try { return new URL(req.link).hostname.replace(/^www\./, ""); } catch { return req.link; } })()}
+                          </span>
+                          {req.productId && (
+                            <span style={{ fontSize:11, color:B.blueText, fontFamily:"var(--font-mono)", background:B.blueBg, padding:"2px 7px", borderRadius:6, border:`1px solid ${B.blueBorder}`, fontWeight:700 }}>
+                              {req.productIdLabel}: {req.productId}
+                            </span>
+                          )}
+                          <UrgencyBadge urgency={req.urgency} />
+                          <StatusBadge status={req.status} />
+                        </div>
+                        <div style={{ display:"flex", gap:16, flexWrap:"wrap" }}>
+                          {[
+                            { icon:"ti-map-pin", text:req.store },
+                            { icon:"ti-user",    text:req.name },
+                            { icon:"ti-package", text:`Qty: ${req.qty}` },
+                            { icon:"ti-clock",   text:fmt(req.createdAt) },
+                          ].map(({ icon, text }) => (
+                            <span key={icon} style={{ fontSize:12, color:B.gray, display:"flex", alignItems:"center", gap:4 }}>
+                              <i className={`ti ${icon}`} style={{ fontSize:12 }} />{text}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <i className={`ti ${isOpen ? "ti-chevron-up" : "ti-chevron-down"}`}
+                        style={{ fontSize:16, color:B.gray, alignSelf:"center" }} />
+                    </div>
+
+                    {isOpen && (
+                      <div style={{ borderTop:`1.5px solid ${B.grayBorder}`, padding:"14px 16px", display:"flex", flexDirection:"column", gap:14, background:"var(--color-background-primary)" }}>
+                        <div style={{ display:"flex", gap:24, flexWrap:"wrap" }}>
+                          <div style={{ flex:1, minWidth:200 }}>
+                            <p style={detLbl}>Product link</p>
+                            <a href={req.link} target="_blank" rel="noreferrer"
+                              style={{ fontSize:13, color:B.blue, wordBreak:"break-all", fontWeight:500 }}>{req.link}</a>
+                          </div>
+                          {req.productId && (
+                            <div>
+                              <p style={detLbl}>Product ID</p>
+                              <p style={{ fontSize:13, fontFamily:"var(--font-mono)", color:"var(--color-text-primary)", margin:0 }}>
+                                {req.retailer} — {req.productIdLabel} <strong>{req.productId}</strong>
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                        {req.notes && (
+                          <div>
+                            <p style={detLbl}>Notes</p>
+                            <p style={{ fontSize:13, color:"var(--color-text-secondary)", margin:0 }}>{req.notes}</p>
+                          </div>
+                        )}
+                        <div>
+                          <p style={{ ...detLbl, marginBottom:8 }}>Update status</p>
+                          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                            {Object.entries(STATUS).map(([k, s]) => {
+                              const busy = updating === req.id + k;
+                              return (
+                                <button key={k} onClick={() => handleUpdate(req.id, k)} disabled={!!updating} style={{
+                                  ...ghostBtn, fontSize:12,
+                                  background:   req.status === k ? s.bg    : "transparent",
+                                  color:        req.status === k ? s.color : B.gray,
+                                  borderColor:  req.status === k ? s.border: B.grayBorder,
+                                  fontWeight:   req.status === k ? 700     : 500,
+                                  opacity: busy ? 0.6 : 1,
+                                }}>
+                                  <i className={`ti ${busy ? "ti-loader-2" : s.icon}`} /> {s.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ─── Root App ─────────────────────────────────────────────────────────────
+    function App() {
+      const [view, setView]         = useState("submit");
+      const [requests, setRequests] = useState([]);
+      const [loading, setLoading]   = useState(true);
+
+      useEffect(() => {
+        FONT_URLS.forEach(href => {
+          if (document.querySelector(`link[href="${href}"]`)) return;
+          const link = document.createElement("link");
+          link.rel = "stylesheet"; link.href = href;
+          document.head.appendChild(link);
+        });
+      }, []);
+
+      const loadRequests = useCallback(async () => {
+        if (!isConfigured) { setLoading(false); return; }
+        setLoading(true);
+        const { data, error } = await sb
+          .from("supply_requests")
+          .select("*")
+          .order("created_at", { ascending: false });
+        if (!error && data) setRequests(data.map(fromRow));
+        setLoading(false);
+      }, []);
+
+      useEffect(() => { loadRequests(); }, [loadRequests]);
+
+      useEffect(() => {
+        if (!isConfigured) return;
+        const channel = sb
+          .channel("supply_requests_changes")
+          .on("postgres_changes", { event: "*", schema: "public", table: "supply_requests" }, () => {
+            loadRequests();
+          })
+          .subscribe();
+        return () => sb.removeChannel(channel);
+      }, [loadRequests]);
+
+      async function handleUpdate(id, newStatus) {
+        const { error } = await sb
+          .from("supply_requests")
+          .update({ status: newStatus })
+          .eq("id", id);
+        if (!error) setRequests(prev => prev.map(r => r.id === id ? { ...r, status: newStatus } : r));
+      }
+
+      async function handleClear() {
+        if (!window.confirm("Delete all requests from the database? This cannot be undone.")) return;
+        const { error } = await sb.from("supply_requests").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+        if (!error) setRequests([]);
+      }
+
+      const pendingCount = requests.filter(r => r.status === "pending").length;
+
+      return (
+        <div style={{ fontFamily:"'Nunito', var(--font-sans)", maxWidth:700, margin:"0 auto" }}>
+          <div style={{ padding:"18px 0 0", marginBottom:0 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
+              <div style={{ width:32, height:32, borderRadius:10, background:`linear-gradient(135deg, ${B.blue}, ${B.teal})`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <i className="ti ti-cookie" style={{ fontSize:18, color:"#fff" }} />
+              </div>
+              <span style={{ fontSize:15, fontWeight:700, color:"var(--color-text-primary)" }}>Supply Portal</span>
+            </div>
+
+            <div style={{ display:"flex", gap:4, background:B.grayLight, borderRadius:14, padding:4 }}>
+              {[
+                { key:"submit",    label:"Submit request",  icon:"ti-plus" },
+                { key:"dashboard", label:`Order board${pendingCount > 0 ? ` · ${pendingCount}` : ""}`, icon:"ti-layout-list" },
+              ].map(t => (
+                <button key={t.key} onClick={() => setView(t.key)} style={{
+                  flex:1, background: view === t.key ? "var(--color-background-primary)" : "transparent",
+                  border: view === t.key ? `1.5px solid ${B.grayBorder}` : "1.5px solid transparent",
+                  borderRadius:10, padding:"8px 14px", cursor:"pointer", fontSize:13,
+                  fontWeight: view === t.key ? 700 : 500,
+                  color: view === t.key ? B.blue : B.gray,
+                  display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+                  transition:"all 0.15s", fontFamily:"inherit",
+                  boxShadow: view === t.key ? "0 1px 4px rgba(0,0,0,0.06)" : "none",
+                }}>
+                  <i className={`ti ${t.icon}`} style={{ fontSize:15 }} />{t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {!isConfigured
+            ? <NotConfigured />
+            : view === "submit"
+              ? <SubmitForm onSubmitted={loadRequests} />
+              : <Dashboard requests={requests} onUpdate={handleUpdate} onClear={handleClear} loading={loading} />
+          }
+        </div>
+      );
+    }
+
+    // ─── Shared styles ────────────────────────────────────────────────────────
+    const card     = { background:"var(--color-background-primary)", border:`1.5px solid ${B.grayBorder}`, borderRadius:16, padding:"1.5rem" };
+    const fld      = { display:"flex", flexDirection:"column", gap:5 };
+    const lbl      = { fontSize:13, fontWeight:700, color:"var(--color-text-primary)" };
+    const inp      = { fontFamily:"'Nunito', var(--font-sans)", fontSize:14, color:"var(--color-text-primary)", background:"var(--color-background-primary)", border:`1.5px solid ${B.grayBorder}`, borderRadius:10, padding:"0 14px", height:40, width:"100%" };
+    const errInp   = { borderColor:"#EF4444", boxShadow:"0 0 0 3px rgba(239,68,68,0.1)" };
+    const primaryBtn = { display:"inline-flex", alignItems:"center", gap:7, padding:"0 20px", height:40, borderRadius:10, background:`linear-gradient(135deg, ${B.blue}, ${B.teal})`, border:"none", cursor:"pointer", fontSize:14, fontWeight:700, color:"#fff", fontFamily:"'Nunito', var(--font-sans)", transition:"opacity 0.15s" };
+    const ghostBtn = { display:"inline-flex", alignItems:"center", gap:6, padding:"0 14px", height:34, borderRadius:10, border:`1.5px solid ${B.grayBorder}`, background:"transparent", cursor:"pointer", fontSize:13, fontWeight:600, color:"var(--color-text-primary)", fontFamily:"'Nunito', var(--font-sans)", transition:"all 0.15s" };
+    const detLbl   = { fontSize:11, fontWeight:700, color:B.gray, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:4 };
+
+    // ─── Mount ────────────────────────────────────────────────────────────────
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
